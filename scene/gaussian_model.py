@@ -25,6 +25,7 @@ class GaussianModel:
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(center, scaling, scaling_modifier, rotation):
+            #print(f"scaling {scaling} and shape {scaling.shape}")
             RS = build_scaling_rotation(torch.cat([scaling * scaling_modifier, torch.ones_like(scaling)], dim=-1), rotation).permute(0,2,1)
             trans = torch.zeros((center.shape[0], 4, 4), dtype=torch.float, device="cuda")
             trans[:,:3,:3] = RS
@@ -122,6 +123,7 @@ class GaussianModel:
             self.active_sh_degree += 1
 
     def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
+        print(pcd)
         self.spatial_lr_scale = spatial_lr_scale
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
@@ -132,11 +134,13 @@ class GaussianModel:
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
-        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
+        scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2) * 1.0 # me
+        print(f'scales {scales}')
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
 
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
-
+        print(opacities)
+        # me
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -234,6 +238,10 @@ class GaussianModel:
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
+        print(f"scale {scale_names}")
+        if "scale_2" in scale_names:
+            scale_names.remove("scale_2")
+        print(f"scale3 {scale_names}")
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
         for idx, attr_name in enumerate(scale_names):
@@ -386,14 +394,22 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, viewpoint_cam): #viewpoint_cam me
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
-
+        #print("new")#me
+        #print(np.shape(self._xyz))#me
         self.densify_and_clone(grads, max_grad, extent)
+        #print(viewpoint_cam.world_view_transform[2, 0:-1])#me
+        #print(viewpoint_cam.FoVy)#me
+        #print(viewpoint_cam.FoVx)#me
         self.densify_and_split(grads, max_grad, extent)
+        #print(np.shape(self._xyz))#me
+        #print("end")#me
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
+        #print(prune_mask)
+        #print("here")
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
@@ -401,6 +417,8 @@ class GaussianModel:
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
+
+
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
