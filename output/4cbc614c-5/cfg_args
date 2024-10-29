@@ -1,0 +1,1 @@
+Namespace(sh_degree=3, source_path='/home/yn86eniw/2d-gaussian-splatting/data/virtual_colon', model_path='./output/4cbc614c-5', images='images', resolution=-1, white_background=False, data_device='cuda', eval=True, render_items=['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature'])

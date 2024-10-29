@@ -1,0 +1,1 @@
+Namespace(data_device='cuda', eval=False, images='images', model_path='./output/344fc42b-1', render_items=['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature'], resolution=-1, sh_degree=3, source_path='/home/yn86eniw/2d-gaussian-splatting/data/perfect_recons_virt_col_mapper_27_9_1', white_background=False)
