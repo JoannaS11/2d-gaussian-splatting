@@ -12,12 +12,11 @@ import geomdl.exchange
 import geomdl
 import math
 from scipy.spatial.transform import Rotation as R
-import utils.general_utils as general_utils
 
 def sigmoid_function(x):
     # x [0,1]: 
     # sigmoid: auf x Werte zw.0 und 1 skaliert, um 0.5 in x Ri verschoben
-    y = 1 / (1 + torch.exp(-10 * (x - 0.5)))#min(max(np.tanh(5*(x-0.5))[0], 0), 1)#
+    y = 1 / (1 + torch.exp(-10 * (x - 0.5)))
     return y
 
 def fct_wrapper(fct, border_low, border_high, a=1, d=0, mirrored = False):
@@ -77,11 +76,15 @@ def factor_fct(segments_array, motion_fct, t_on_line, rot_point, vector_to_line,
     factor_original = combine_fcts_two_fct(t_on_line, False, list_fcts)
 
     if rot_point:
-        scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start = find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segments_array, speed)
+        scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start, scale, scale_reversed, scale_start = find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segments_array, speed, scale_point)
 
     return factor_original, factor_reversed, scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start, scale, scale_reversed, scale_start
 
-def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segments, speed):
+def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segments, speed, scale_point):
+
+    scale = None
+    scale_reversed = None
+    scale_start = None
     # variables to iterate over segments
     x = 0
     # locate space for gradient of sigmoid
@@ -105,15 +108,12 @@ def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segment
         if border_low == 0:
             border_low = -0.0001
 
-        
-
         # calculate gradient of sigmoid for a half segment
         grad_sig += 4 * subtract_factor * torch.where((t_on_line <= border_low) | (t_on_line > border_high), 0, fct(t_on_line) * (1 - fct(t_on_line)))
         z = torch.argwhere((t_on_line > border_low) & (t_on_line <= border_high))
         t_sort = torch.argsort(t_on_line)
         #k = grad_sig[z]
         #o = torch.where((t_on_line <= border_low) | (t_on_line > border_high), 0, fct(t_on_line) * (1 - fct(t_on_line)))
-        #print(k)
         t_sort = torch.argsort(t_on_line)
         #t_m = grad_sig[t_sort]
 
@@ -130,7 +130,6 @@ def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segment
         vec_to_line_part[vec_to_line_part_arg] = vector_to_line[vec_to_line_part_arg]
 
         j = torch.cross( medial_axis_vector[idx].to(torch.float64).reshape([1,3]), vec_to_line_part)
-        #print(f"rot axis vector vor norm {j} and vec to line part {vec_to_line_part}")
         rot_axis_vector += torch.nn.functional.normalize(j, dim=1).to(torch.float32)
 
     angle = grad_sig * quarter_pi * speed
@@ -148,7 +147,6 @@ def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segment
     scaled_rot_axis_vector = rot_axis_vector * angle.unsqueeze(1)
     scaled_rot_axis_vector_reversed = rot_axis_vector * angle_reversed.unsqueeze(1)
     scaled_rot_axis_vector_start = rot_axis_vector * angle_start.unsqueeze(1)
-    #print(f"scaled rot axis vector {scaled_rot_axis_vector} and start {scaled_rot_axis_vector_start}")
     scaled_rot_axis_vector = torch.from_numpy(R.from_rotvec(scaled_rot_axis_vector.cpu().detach().numpy(),degrees=True).as_quat()).to(dtype=torch.float32, device='cuda')
     scaled_rot_axis_vector_reversed = torch.from_numpy(R.from_rotvec(scaled_rot_axis_vector_reversed.cpu().detach().numpy(),degrees=True).as_quat()).to(dtype=torch.float32, device='cuda')
     scaled_rot_axis_vector_start = torch.from_numpy(R.from_rotvec(scaled_rot_axis_vector_start.cpu().detach().numpy(),degrees=True).as_quat()).to(dtype=torch.float32, device='cuda')
@@ -156,8 +154,12 @@ def find_angle(list_fcts, t_on_line, vector_to_line, medial_axis_vector, segment
     #scaled_rot_axis_vector = change_quat_from_last_to_first_order(scaled_rot_axis_vector)
     #scaled_rot_axis_vector_reversed = change_quat_from_last_to_first_order(scaled_rot_axis_vector_reversed)
     #scaled_rot_axis_vector_start = change_quat_from_last_to_first_order(scaled_rot_axis_vector_start)
+    if scale_point:
+        scale = grad_sig
+        scale_start = grad_sig_start
+        scale_reversed = -grad_sig
 
-    return scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start
+    return scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start, scale, scale_reversed, scale_start
 
 def matrix_array_to_quaternion(matrix):
     eps = 1e-7
@@ -264,7 +266,6 @@ def view(dataset, pipe, iteration, moving,rot_point, json_file_path, data_direct
         factor_original, factor_reversed, scaled_rot_axis_vector, scaled_rot_axis_vector_reversed, scaled_rot_axis_vector_start, scale, scale_reversed, scale_start = factor_fct(segments_array, motion_fct, t_on_line, rot_point, vector_to_line, speed, medial_axis_bspline, scale_point, two_functions_for_one_segment)
 
         reverse = False
-        #gaussians._xyz *= o.to(device='cuda')
 
         idx = 0
         while True:
@@ -285,41 +286,32 @@ def view(dataset, pipe, iteration, moving,rot_point, json_file_path, data_direct
                                 factor = factor_reversed
                                 if rot_point:
                                     rotation_matrix = scaled_rot_axis_vector_reversed
+                                if scale_point:
+                                    scaling_factor = scale_reversed
                             else:
                                 if idx == 0:
                                     factor = torch.fmax(torch.zeros_like(factor_original), factor_original)
                                     if rot_point:
                                         rotation_matrix = scaled_rot_axis_vector_start
+                                    if scale_point:
+                                        scaling_factor = scale_start
                                 else:
                                     factor = factor_original
                                     if rot_point:
                                         rotation_matrix = scaled_rot_axis_vector
+                                    if scale_point:
+                                        scaling_factor = scale
                                 
                             factor = torch.reshape(factor, [np.shape(factor)[0 ], 1])
-                            #t = torch.tensor([0.5, 0.5, 1,0],dtype=torch.float32)
-                            #rotation_matrix = t.repeat(gaussians._xyz.shape[0],1)
-                            # while loop
-                            #q = 0
-                            #while q < 1:
-                            #    q += 0.01
-                                #print(q)
+
                             while stop_condition(original_point, gaussians._xyz[t_smallest_distance_arg[0]][0]):
                                 net_image_bytes = None
                                 custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
 
-                                """if math.dist(original_point, gaussians._xyz[t_smallest_distance_arg[0]][0]) <= 1.1 * dist_half_contr_point:
-                                    slow_down_factor = 10 * (math.dist(original_point, gaussians._xyz[t_smallest_distance_arg[0]][0]) / dist_half_contr_point - 1)
-                                    gaussians._xyz += 0.4 *(1 + 1.5*slow_down_factor) * speed * factor * vector_to_line
-                                elif math.dist(original_point, gaussians._xyz[t_smallest_distance_arg[0]][0]) >= 1.9 * dist_half_contr_point:
-                                    slow_down_factor = 10 * (2 - math.dist(original_point, gaussians._xyz[t_smallest_distance_arg[0]][0]) / (dist_half_contr_point))
-                                    gaussians._xyz += 0.4 *(1 + 1.5 * slow_down_factor)* speed * factor * vector_to_line
-                                else:"""
                                 gaussians._xyz += speed * factor * vector_to_line
                                 if rot_point:
                                     #m = torch.from_numpy(R.from_quat(gaussians._rotation.cpu().detach().numpy()).as_matrix())
-                                    #print(f"rot vec as matrix {m}")
                                     #h = R.from_rotvec(rotation_matrix.cpu().detach().numpy())
-                                    #print(f"gauß rot as matrix{h}")
                                     gaussian_rot = change_quat_from_first_to_last_order(gaussians._rotation)
                                     #rot_matrix = change_quat_from_first_to_last_order(rotation_matrix)
                                     l = torch.matmul(torch.from_numpy(R.from_quat(rotation_matrix.cpu().detach().numpy()).as_matrix())[:], torch.from_numpy(R.from_quat(gaussian_rot.cpu().detach().numpy()).as_matrix())[:]).to(device='cuda')
@@ -327,11 +319,14 @@ def view(dataset, pipe, iteration, moving,rot_point, json_file_path, data_direct
                                     #l = torch.matmul(general_utils.build_rotation(rot_matrix), general_utils.build_rotation(gaussians._rotation))
 
                                     #gaussians._rotation = matrix_array_to_quaternion(l.to(dtype=torch.float32))
-                                    #print(f"new rot matrix {l}")
                                     tmp = torch.from_numpy(R.from_matrix(l.cpu().detach().numpy()).as_quat()).to(dtype=torch.float32, device='cuda')
                                     gaussians._rotation = change_quat_from_last_to_first_order(tmp)
+                                
+                                if scale_point:
+                                    q = torch.stack((scaling_factor, scaling_factor),1)
+                                    gaussians._scaling *= (1 + q)
 
-                                #print(f"gaus rot innen {gaussians._rotation[60000]}")
+
                                 if custom_cam != None:
                                     render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)
                                     net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
@@ -341,13 +336,11 @@ def view(dataset, pipe, iteration, moving,rot_point, json_file_path, data_direct
                                     # Add more metrics as needed
                                 }
                                 network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
-                            idx += 1#torch.tensor(1, dtype=torch.long)
-                            #print("außerhalb")
+                            idx += 1
                             if reverse:
                                 reverse = False
                             else:
                                 reverse = True
-                            #print(f"gaus rot {gaussians._rotation[62000]}")
                         except Exception as e:
                                     raise e
                                     print('Viewer closed')
